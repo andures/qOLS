@@ -28,7 +28,7 @@ from .. import logger  # CR-01
 from qgis.PyQt import uic
 from qgis.PyQt.QtCore import pyqtSignal, Qt, QTimer, pyqtSlot, QRegularExpression
 from qgis.PyQt.QtGui import QRegularExpressionValidator
-from qgis.PyQt.QtWidgets import QCheckBox, QComboBox, QDockWidget, QLabel, QLineEdit, QToolTip
+from qgis.PyQt.QtWidgets import QApplication, QCheckBox, QComboBox, QDockWidget, QLabel, QLineEdit, QToolTip
 from ..compat import TOOLTIP_ROLE, MSG_INFO, MSG_CRITICAL
 from qgis.core import QgsMapLayerProxyModel, QgsProject, Qgis, QgsWkbTypes, QgsVectorLayer
 
@@ -962,53 +962,11 @@ class QolsDockWidget(QDockWidget, FORM_CLASS):
         return super().eventFilter(obj, event)
 
     def setup_enhanced_combos(self):
-        """Setup enhanced combo boxes with minimal styling."""
+        """Reset combo boxes to default QGIS theme styling (no hardcoded colors)."""
         try:
-
-            # Note: Tooltips are handled by setup_dropdown_tooltips() for individual items
-            # No need to set combo-level tooltips as they override item tooltips
-
-            # CR-05: single stylesheet applied once — includes hover fix previously in setup_dropdown_tooltips
-            minimal_combo_style = """
-                QgsMapLayerComboBox {
-                    border: 1px solid #bdc3c7;
-                    border-radius: 4px;
-                    padding: 2px 4px;
-                    font-size: 9pt;
-                    background-color: white;
-                }
-                QgsMapLayerComboBox:hover {
-                    border-color: #3498db;
-                    background-color: #f8f9fa;
-                }
-                QgsMapLayerComboBox QAbstractItemView::item:hover {
-                    color: black;
-                    background-color: #0078d4;
-                }
-                QgsMapLayerComboBox QAbstractItemView::item:selected {
-                    color: black;
-                }
-                QToolTip {
-                    background-color: #ffffcc;
-                    color: #000000;
-                    border: 1px solid #cccccc;
-                    padding: 5px;
-                    border-radius: 3px;
-                    font-size: 10pt;
-                }
-                QgsMapLayerComboBox#runwayLayerCombo {
-                    border-left: 3px solid #3498db;
-                }
-                QgsMapLayerComboBox#thresholdLayerCombo {
-                    border-left: 3px solid #e67e22;
-                }
-            """
-
-            # Apply the minimal styling
-            self.runwayLayerCombo.setStyleSheet(minimal_combo_style)
-            self.thresholdLayerCombo.setStyleSheet(minimal_combo_style)
-
-
+            # Clear any inline stylesheets so the active QGIS theme (dark/light) owns rendering.
+            self.runwayLayerCombo.setStyleSheet("")
+            self.thresholdLayerCombo.setStyleSheet("")
         except Exception as e:
             logger.warning(f"Unhandled error: {e}")
 
@@ -1061,25 +1019,39 @@ class QolsDockWidget(QDockWidget, FORM_CLASS):
                 threshold_info = "x No layer selected"
                 threshold_status = "No layer"
 
-            # Individual status icons for each layer (using beautiful emojis for live status)
+            # Detect active theme (dark vs light) to pick readable label colors.
+            _is_dark = QApplication.palette().window().color().lightness() < 128
+            _c_warn  = "#FFA726" if _is_dark else "#E65100"  # orange
+            _c_ok    = "#66BB6A" if _is_dark else "#2E7D32"  # green
+            _c_err   = "#EF5350" if _is_dark else "#C62828"  # red
+            _base_style = "font-weight: bold; font-size: 11px;"
+
             if "All" in runway_status:
-                runway_icon = "⚠️"  # Warning for "All" - caution about using all features
+                runway_icon = "⚠"
+                runway_style = f"QLabel {{ color: {_c_warn}; {_base_style} }}"
             elif "Selected" in runway_status:
-                runway_icon = "✅"  # Success for "Selected" - recommended approach
+                runway_icon = "✔"
+                runway_style = f"QLabel {{ color: {_c_ok}; {_base_style} }}"
             else:
-                runway_icon = "❌"
+                runway_icon = "✘"
+                runway_style = f"QLabel {{ color: {_c_err}; {_base_style} }}"
 
             if "All" in threshold_status:
-                threshold_icon = "⚠️"  # Warning for "All" - caution about using all features
+                threshold_icon = "⚠"
+                threshold_style = f"QLabel {{ color: {_c_warn}; {_base_style} }}"
             elif "Selected" in threshold_status:
-                threshold_icon = "✅"  # Success for "Selected" - recommended approach
+                threshold_icon = "✔"
+                threshold_style = f"QLabel {{ color: {_c_ok}; {_base_style} }}"
             else:
-                threshold_icon = "❌"
+                threshold_icon = "✘"
+                threshold_style = f"QLabel {{ color: {_c_err}; {_base_style} }}"
 
-            # Update per-layer labels (Issue #52 UI change)
+            # Update per-layer labels
             try:
                 self.runwaySelectionStatusLabel.setText(f"{runway_icon} {runway_status}")
+                self.runwaySelectionStatusLabel.setStyleSheet(runway_style)
                 self.thresholdSelectionStatusLabel.setText(f"{threshold_icon} {threshold_status}")
+                self.thresholdSelectionStatusLabel.setStyleSheet(threshold_style)
             except Exception as e:
                 logger.warning(f"Unhandled error: {e}")
 
