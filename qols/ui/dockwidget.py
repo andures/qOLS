@@ -520,8 +520,6 @@ class QolsDockWidget(QDockWidget, FORM_CLASS):
             self.set_numeric_value('spin_height_inner', inner_defaults.get('height_m', 45.0))
 
             # --- Conical defaults (R-01) ---
-            # con_rule kept separately so we can distinguish rule-supplied radius_m from ICAO fallback.
-            con_rule = rule_mgr.get_conical_defaults(rwy, code)
             conical_defaults = self._get_merged_defaults(
                 rule_mgr.get_conical_defaults,
                 icao_get_conical_defaults,
@@ -533,19 +531,7 @@ class QolsDockWidget(QDockWidget, FORM_CLASS):
             slope_pct = conical_defaults.get('slope_pct', 5.0) or 5.0
             self.set_numeric_value('spin_conical_slope', slope_pct)
 
-            # If the active rule supplies an explicit radius, apply it directly and skip recalc.
-            # We use con_rule (not the merged dict) so we don't mistake the ICAO 6000 m fallback
-            # for an intentional rule value.
-            con_rule_radius = con_rule.get('radius_m') if con_rule else None
-            if con_rule_radius is not None:
-                self.set_numeric_value('spin_L_conical', con_rule_radius)
-                skip_recalc = True
-            else:
-                skip_recalc = False
-
-            # Recalculate conical radius from height/slope+inner unless the rule provided one
-            if not skip_recalc:
-                self.recalculate_conical_radius()
+            self.recalculate_conical_radius()
 
         except Exception as e:
             logger.warning(f"Unhandled error: {e}")
@@ -1992,6 +1978,7 @@ class QolsDockWidget(QDockWidget, FORM_CLASS):
                     'contour_interval_m': int(round(self.get_numeric_value('spin_contour_interval')))
                 }
             elif surface_type == SurfaceType.CONICAL:
+                self.recalculate_conical_radius()
                 specific_params = {
                     'radius': self.get_numeric_value('spin_L_conical'),        # Distance L is the radius
                     'height': self.get_numeric_value('spin_height_conical'),   # Height for 3D polygon
@@ -2006,6 +1993,7 @@ class QolsDockWidget(QDockWidget, FORM_CLASS):
                     'rwyClassification': self.combo_rwyClassification_inner_conical.currentText()
                 }
             elif surface_type == SurfaceType.INNER_CONICAL:
+                self.recalculate_conical_radius()
                 datum_elevation = self.get_numeric_value('spin_datum_inner_conical')
                 inner_height = self.get_numeric_value('spin_height_inner')
                 inner_radius = self.get_numeric_value('spin_L_inner')
