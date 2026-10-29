@@ -24,6 +24,7 @@ from ..rules import manager as rule_mgr
 from ..surfaces.approach import get_approach_defaults as icao_get_approach_defaults
 from ..surfaces.new_ols_approach import get_new_ols_approach_defaults
 from ..surfaces.new_ols_transitional import get_new_ols_transitional_defaults
+from ..surfaces.inner_conical_circle import resolve_arp_center
 from ..surface_types import SurfaceType
 from .. import logger  # CR-01
 from ..direction_marker import build_marker_geometry
@@ -118,6 +119,7 @@ class QolsDockWidget(QDockWidget, FORM_CLASS):
     combo_rwyClassification_ofz: QComboBox
     spin_code_ofz: QComboBox
     combo_rwyClassification_inner_conical: QComboBox
+    combo_shape_inner_conical: QComboBox
     spin_code_inner_conical: QComboBox
     spin_conical_slope: QLineEdit
     spin_height_conical: QLineEdit
@@ -317,6 +319,10 @@ class QolsDockWidget(QDockWidget, FORM_CLASS):
 
             # Connect tab change to reinitialize defaults (helpful for widget visibility)
             self._connect(self.scriptTabWidget.currentChanged, self.on_tab_changed)
+            self.combo_shape_inner_conical.setItemData(0, 'racetrack')
+            self.combo_shape_inner_conical.setItemData(1, 'circle')
+            self._connect(self.combo_shape_inner_conical.currentIndexChanged,
+                          self._update_inner_conical_shape_controls)
 
             # Live direction-preview marker: update on layer change and zoom (#117)
             self._connect(self.runwayLayerCombo.layerChanged, self._update_direction_marker)
@@ -330,6 +336,7 @@ class QolsDockWidget(QDockWidget, FORM_CLASS):
             # Update direction buttons and initial selection info
             self.update_direction_button()
             self.update_transitional_direction_button()
+            self._update_inner_conical_shape_controls()
             self.update_selection_info()
             self._update_direction_marker()
 
@@ -535,6 +542,47 @@ class QolsDockWidget(QDockWidget, FORM_CLASS):
 
         except Exception as e:
             logger.warning(f"Unhandled error: {e}")
+
+    def _inner_conical_shape(self) -> str:
+        """Return the selected shape; old panels without a selector use racetrack."""
+        selector = getattr(self, 'combo_shape_inner_conical', None)
+        if selector is not None and selector.currentData() == 'circle':
+            return 'circle'
+        return 'racetrack'
+
+    def _is_inner_conical_circle(self) -> bool:
+        if self._inner_conical_shape() != 'circle':
+            return False
+        tabs = getattr(self, 'scriptTabWidget', None)
+        if tabs is None:
+            return False
+        return tabs.tabText(tabs.currentIndex()) == SurfaceType.INNER_CONICAL.value
+
+    @pyqtSlot()
+    def _update_inner_conical_shape_controls(self) -> None:
+        """Preserve manual inputs while showing the effective circle input source."""
+        circle = self._inner_conical_shape() == 'circle'
+        self.label_datum_inner_conical.setVisible(not circle)
+        self.spin_datum_inner_conical.setVisible(not circle)
+        self.directionButton.setEnabled(not self._is_inner_conical_circle())
+        if circle:
+            self.label_info_inner_conical.setText(
+                "Circle (ARP): Uses the ARP Layer and shared ARP Elevation above.\n"
+                "- Exactly one ARP point is required; Selected Only is respected.\n"
+                "- Runway, threshold layers and runway direction are not required.\n"
+                "- Inner Horizontal Z = ARP Elevation + Inner Horizontal Height.\n"
+                "- Conical radius = Inner Horizontal Radius + Height / (Slope / 100)."
+            )
+        else:
+            self.label_info_inner_conical.setText(
+                "Workflow: Configure Inner Horizontal first, then Conical "
+                "(uses Inner Horizontal radius for calculation)\n"
+                "- Inner Horizontal: Racetrack-shaped 3D polygon at specified height and radius\n"
+                "- Conical: 3D cone surface, radius auto-calculated from Height / Slope "
+                "+ Inner Horizontal Radius\n"
+                "- Both surfaces use shared RWY Classification and Code for ICAO defaults"
+            )
+        self.update_selection_info()
 
     # Issue #51: Hide OFZ parameters when RWY Classification is Non-instrument or Non-precision approach
     def update_ofz_visibility(self):
@@ -1327,6 +1375,14 @@ class QolsDockWidget(QDockWidget, FORM_CLASS):
                 arp_style = f"QLabel {{ {_base_style} }}"
 
             # Update per-layer labels
+            if self._is_inner_conical_circle():
+                runway_status = threshold_status = "Not required for ARP circle"
+                runway_icon = threshold_icon = "•"
+                runway_style = threshold_style = f"QLabel {{ {_base_style} }}"
+                effective_arp_count = (arp_selected if use_arp_selected else arp_total) if arp_layer else 0
+                if effective_arp_count != 1:
+                    arp_icon = "✘"
+                    arp_style = f"QLabel {{ color: {_c_err}; {_base_style} }}"
             try:
                 self.runwaySelectionStatusLabel.setText(f"{runway_icon} {runway_status}")
                 self.runwaySelectionStatusLabel.setStyleSheet(runway_style)
@@ -1631,6 +1687,8 @@ class QolsDockWidget(QDockWidget, FORM_CLASS):
 
             self._update_direction_marker()
 
+            self._update_inner_conical_shape_controls()
+
         except Exception as e:
             logger.warning(f"Unhandled error: {e}")
 
@@ -1697,6 +1755,18 @@ class QolsDockWidget(QDockWidget, FORM_CLASS):
     def validate_layers(self):
         """Validate that required layers are selected with correct geometry types - ULTRA ROBUST VERSION."""
         try:
+            if self._is_inner_conical_circle():
+                try:
+                    resolve_arp_center(
+                        self.arpLayerCombo.currentLayer(),
+                        self.useSelectedArpCheckBox.isChecked(),
+                        self.iface.mapCanvas().mapSettings().destinationCrs(),
+                    )
+                except ValueError as error:
+                    self.show_error_message(str(error))
+                    return False
+                return True
+
             # CRITICAL CHECK 0: Project CRS must be projected (not geographic/lat-lon)
             if not self._validate_project_crs():
                 return False
@@ -1994,7 +2064,11 @@ class QolsDockWidget(QDockWidget, FORM_CLASS):
                 }
             elif surface_type == SurfaceType.INNER_CONICAL:
                 self.recalculate_conical_radius()
-                datum_elevation = self.get_numeric_value('spin_datum_inner_conical')
+                shape = self._inner_conical_shape()
+                datum_elevation = (
+                    arp_elevation_m if shape == 'circle'
+                    else self.get_numeric_value('spin_datum_inner_conical')
+                )
                 inner_height = self.get_numeric_value('spin_height_inner')
                 inner_radius = self.get_numeric_value('spin_L_inner')
                 inner_params = {
@@ -2016,6 +2090,7 @@ class QolsDockWidget(QDockWidget, FORM_CLASS):
                     'rwyClassification': self.combo_rwyClassification_inner_conical.currentText(),
                 }
                 specific_params = {
+                    'shape': shape,
                     'inner_horizontal': inner_params,
                     'conical': conical_params,
                     'combined_execution': True,
